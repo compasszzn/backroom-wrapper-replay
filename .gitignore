@@ -1,0 +1,7 @@
+# 内挂运行产物
+recordings/
+logs/
+
+# Python
+__pycache__/
+*.pyc
