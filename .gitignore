@@ -1,6 +1,10 @@
-# 内挂运行产物
+# 内挂运行产物（一局一目录的录像/状态流/输入序列，按策略落盘）
 recordings/
 logs/
+# strategies/ 布局下每个策略自己的录制与日志（上面的模式已覆盖任意层级，
+# 这里写明是给读 .gitignore 的人看的）
+strategies/*/recordings/
+strategies/*/logs/
 
 # Python
 __pycache__/
