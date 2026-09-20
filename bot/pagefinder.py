@@ -141,8 +141,16 @@ class Bot:
 
     # ── 观测与输入 ──────────────────────────────────────────────────────
     def observe(self):
-        """最新一帧结构化状态（realtime 下由页面每帧推送，不推进时间）。"""
-        return self.g.observe()
+        """最新一帧桥接观测（realtime 下由页面每帧推送，不推进时间）。
+
+        harness 的 numeric 档把桥接观测包了一层：
+        client.observe() 返回 {"t_ms", "frame", "state": <桥接观测>}，
+        桥接观测自己才有 state/player/pages/…… —— 这里拆包，之后字段平铺可用。
+        """
+        r = self.g.observe()
+        if isinstance(r, dict) and isinstance(r.get("state"), dict) and "world" in r["state"]:
+            return r["state"]
+        return r
 
     def wait_playing(self, timeout=60):
         """等引擎进入 playing（reset 返回时 world=true，但留几拍余量）。"""

@@ -53,10 +53,12 @@ done
 
 # 挑一个没人用的虚拟屏号与端口（避开别的 harness 实例）
 pick_display() {
-  for _ in $(seq 150 199); do
-    [ -e "/tmp/.X11-unix/X$_" ] || { echo ":$_"; return; }
+  local n
+  for n in $(seq 150 199); do
+    [ -e "/tmp/.X11-unix/X$n" ] || { echo ":$n"; return; }
   done
-  echo "150-199 的虚拟屏号都被占了"; exit 1
+  echo "150-199 的虚拟屏号都被占了" >&2
+  exit 1
 }
 DISP="$(pick_display)"
 GAME_PORT=$(( 20000 + RANDOM % 20000 ))
@@ -81,10 +83,8 @@ MODEB_RECORDINGS="$HERE/recordings" python3 -u harness.py \
     --port "$GAME_PORT" --ready-timeout "$READY_TIMEOUT" \
     > "$LOG" 2>&1 &
 HP=$!
-BOTPID=""
 
 cleanup() {
-  [ -n "$BOTPID" ] && kill "$BOTPID" 2>/dev/null || true
   kill -TERM "$HP" 2>/dev/null || true
   wait "$HP" 2>/dev/null || true
 }
@@ -129,8 +129,7 @@ REPLAY_RUN="$RUN" python3 -u "$HERE/bot/pagefinder.py" \
     --pages-goal "$PAGES_GOAL" \
     --max-seconds "$MAX_SECONDS" \
     --rec-fps "$REC_FPS" 2>&1 | tee -a "$LOG"
-BOTPID=""
-RC="${PIPESTATUS[0]}"
+RC="${PIPESTATUS[0]}"      # 紧跟管道取值：任何中间命令都会把 PIPESTATUS 冲掉
 set -e
 
 echo
