@@ -48,6 +48,15 @@ done
 for c in python3 Xvfb ffmpeg; do
   command -v "$c" >/dev/null 2>&1 || { echo "缺 $c —— 装好后重试（参考 Backroom-Wrapper/check_env.sh）"; exit 1; }
 done
+# Chrome：adapter 自己会解析真二进制，这里只做「有没有」的前置把关
+if [ -n "${BACKROOMS_CHROME:-}" ]; then
+  [ -f "$BACKROOMS_CHROME" ] || { echo "BACKROOMS_CHROME 指向的 $BACKROOMS_CHROME 不存在"; exit 1; }
+elif ! command -v google-chrome >/dev/null 2>&1 \
+   && ! command -v chromium >/dev/null 2>&1 \
+   && ! command -v chromium-browser >/dev/null 2>&1 \
+   && [ ! -x /opt/google/chrome/chrome ]; then
+  echo "缺 Chrome/Chromium —— Backroom-Wrapper 的 adapter 需要它"; exit 1
+fi
 [ -d "$WRAPPER_DIR/modeB" ] || { echo "找不到 $WRAPPER_DIR/modeB —— wrapper.conf 的 WRAPPER_DIR 指错了吗？"; exit 1; }
 [ -f "$WRAPPER_DIR/game/index.html" ] || { echo "找不到 $WRAPPER_DIR/game/index.html —— 先在 Backroom-Wrapper 里跑 source/build_game.sh"; exit 1; }
 
@@ -89,7 +98,8 @@ cleanup() {
   wait "$HP" 2>/dev/null || true
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
   echo
@@ -117,11 +127,14 @@ CTRL="$(sock_of "$CTRL_RAW")"
 echo "游戏已就绪（$(( SECONDS - T0 )) 秒）：$SOCK"
 
 # ── 跑内挂：固定种子 → 自动游玩到拿到一页纸 → 自动收 MP4 与 log ─────────
+# 外层看门狗：bot 内部有预算检查，但 socket 读卡死时只有它能兜底
+# （预算 + reset/开机 120s 余量；超时被杀按失败处理）
+BOT_TIMEOUT=$(( MAX_SECONDS + 120 ))
 echo
 echo "内挂启动：seed=$SEED 目标=$PAGES_GOAL 页，录制 ${REC_FPS}fps，预算 ${MAX_SECONDS}s"
 echo
 set +e
-REPLAY_RUN="$RUN" python3 -u "$HERE/bot/pagefinder.py" \
+REPLAY_RUN="$RUN" timeout "${BOT_TIMEOUT}s" python3 -u "$HERE/bot/pagefinder.py" \
     --socket "$SOCK" \
     --control "$CTRL" \
     --modeb-dir "$MB" \

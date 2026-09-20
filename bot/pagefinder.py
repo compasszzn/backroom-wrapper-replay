@@ -117,6 +117,32 @@ class Bot:
                 {k: v for k, v in row.items() if k not in ("type", "t_wall", "name")},
                 ensure_ascii=False)))
 
+    def dump_logs(self, out_dir):
+        """把决策日志写进产物目录（成功与失败路径共用）。"""
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, "bot_log.jsonl"), "w", encoding="utf-8") as f:
+            for row in self.log_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def base_summary(self, success, error=None):
+        """summary.json 的公共部分——失败局也有一份对称的总结。"""
+        s = {
+            "run": os.environ.get("REPLAY_RUN", ""),
+            "seed": self.seed,
+            "success": success,
+            "pages_goal": self.pages_goal,
+            "pages_taken": [[i, [round(v, 2) for v in self.level.page_spots[i]["pos"]]]
+                            for i in self.grabbed] if self.level else [],
+            "pages_abandoned": sorted(self.failed_pages),
+            "entity_ever_active": self.entity_ever_active,
+            "decision_cycles": self.cycles,
+            "note": "迷宫与页位由种子离线重建（bot/levelgen.py，对照上游 level.ts 逐位移植）；"
+                    "灯光爆闪/实体抖动等 Math.random 装饰性随机不在固定范围内（见 SCOPE.md）",
+        }
+        if error is not None:
+            s["error"] = str(error)
+        return s
+
     def cycle_log(self, obs, phase, **extra):
         p = obs.get("player") or {}
         self.cycles += 1
@@ -230,13 +256,16 @@ class Bot:
 
     # ── 走路 ────────────────────────────────────────────────────────────
     def _immediate_target(self, pos, path):
-        """从当前真实位置出发，取路径上直线可走的**最远**点（拉直走，少拐弯）。"""
-        best = path[-1]
+        """从当前真实位置出发，取路径上直线可走的**最远**点（拉直走，少拐弯）。
+        一个都看不清（贴墙贴得比 margin 还近）时退而求其次：从近到远找第一个
+        看得清的——别直勾勾瞄向一个穿墙的终点，那只会顶着墙蹭到停滞自救。"""
         for i in range(len(path) - 1, -1, -1):
             if self.level.corridor_clear(pos[0], pos[1], path[i][0], path[i][1]):
-                best = path[i]
-                break
-        return best
+                return path[i]
+        for pt in path:
+            if self.level.corridor_clear(pos[0], pos[1], pt[0], pt[1]):
+                return pt
+        return path[0]      # 起码瞄着自己这格的格心，剩下的交给停滞自救
 
     def walk_to(self, target, arrive_r=0.5, phase="nav"):
         """反馈式走到 target：观测→修正视角→按 w 前进，每圈 ~300ms。"""
@@ -254,6 +283,10 @@ class Bot:
             if dist <= arrive_r:
                 self.cycle_log(obs, phase, target=list(target), dist=dist,
                                action="arrived")
+                # 到站松开 w：不带惯性返回，去哪由调用方决定
+                evs = self.key_event("w", False)
+                if evs:
+                    self.g.act(evs, advance_ms=60)
                 return obs
             # 迷宫格变了或还没有路径 → 重规划
             cell = self.level.cell_of(*pos)
@@ -455,30 +488,18 @@ class Bot:
         summary = self.control.call("rec_stop")
         kept = self.control.call("rec_keep", id=self.rec_id)
         self.rec_dir = kept["path"]
-        with open(os.path.join(self.rec_dir, "bot_log.jsonl"), "w", encoding="utf-8") as f:
-            for row in self.log_rows:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        run_summary = {
-            "run": os.environ.get("REPLAY_RUN", ""),
-            "seed": self.seed,
-            "success": success,
+        run_summary = self.base_summary(True)
+        run_summary.update({
             "pages_collected": obs.get("pages"),
-            "pages_goal": self.pages_goal,
             "wall_seconds": round(time.time() - self.t0, 2),
             "game_seconds": round(game_seconds, 2),
             "reset_wall_seconds": self.reset_seconds,
             "spawn": [round(v, 3) for v in self.level.spawn],
-            "pages_taken": [[i, [round(v, 2) for v in self.level.page_spots[i]["pos"]]]
-                             for i in self.grabbed],
-            "pages_abandoned": sorted(self.failed_pages),
-            "entity_ever_active": self.entity_ever_active,
-            "decision_cycles": self.cycles,
             "recording": {"id": self.rec_id, "dir": self.rec_dir,
                           "duration_s": (summary.get("meta") or {}).get("duration_s"),
                           "qc": (summary.get("meta") or {}).get("qc")},
-            "note": "迷宫与页位由种子离线重建（bot/levelgen.py，对照上游 level.ts 逐位移植）；"
-                    "灯光爆闪/实体抖动等 Math.random 装饰性随机不在固定范围内（见 SCOPE.md）",
-        }
+        })
+        self.dump_logs(self.rec_dir)
         with open(os.path.join(self.rec_dir, "summary.json"), "w", encoding="utf-8") as f:
             json.dump(run_summary, f, ensure_ascii=False, indent=1)
         print("[bot] ✔ 找到第 %d 张页（目标 %d），用时 %.1fs（游戏内 %.1fs）"
@@ -513,18 +534,27 @@ def main():
     except Exception as e:
         print("[bot] ✘ 失败：%s" % e)
         bot.log({"type": "error", "error": str(e)})
-        # 失败也要把已开的录制收尾保留下来（录像里就有失败现场）
+        # 失败也要把现场留下来：开过录就收尾保留（录像里有失败过程）；
+        # 还没开录（reset/建图阶段就炸）就把日志落进本包 logs/，别让决策过程蒸发。
+        out_dir = None
         try:
             if bot.rec_id:
                 bot.control.call("rec_stop")
                 kept = bot.control.call("rec_keep", id=bot.rec_id)
-                with open(os.path.join(kept["path"], "bot_log.jsonl"), "w",
-                          encoding="utf-8") as f:
-                    for row in bot.log_rows:
-                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                print("[bot] 失败现场已保留：%s" % kept["path"])
+                out_dir = kept["path"]
         except Exception as e2:
             print("[bot] 收尾录制也失败了：%s" % e2)
+        if out_dir is None:
+            out_dir = os.path.join(_HERE, "..", "logs",
+                                   "bot-failure-%s" % time.strftime("%Y%m%d-%H%M%S"))
+        s = bot.base_summary(False, error=e)
+        s["wall_seconds"] = round(time.time() - bot.t0, 2)
+        if bot.rec_dir:
+            s["recording_dir"] = bot.rec_dir
+        bot.dump_logs(out_dir)
+        with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
+            json.dump(s, f, ensure_ascii=False, indent=1)
+        print("[bot] 失败现场已保留：%s" % out_dir)
     finally:
         bot.close()
     sys.exit(rc)

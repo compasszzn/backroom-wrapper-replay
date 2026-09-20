@@ -85,9 +85,14 @@ Backroom-Wrapper 的玩家模型只能「发键鼠、看画面」（pixel 信道
 - **numeric 信道的双层嵌套**：harness 把桥接观测包了一层
   `{t_ms, frame, state: <桥接观测>}`，桥接观测里才有 `state`（字符串）等字段。
   bot 的 `observe()` 里拆包，别拿外层的 `state`（是个 dict）当状态机用。
-- **`PIPESTATUS` 要紧跟管道取**：中间隔着任何命令都会被冲掉，退出码会静默变 0。
+- **`PIPESTATUS` 要紧跟管道取值**：中间隔着任何命令都会被冲掉，退出码会静默变 0。
 - **出生点校验是移植的试金石**：`levelgen` 生成的出生点与观测对不上就立刻报错，
-  绝不带着错图导航。（实测 seed=1234 误差 0.0m，页位经实际取页验证。）
+  绝不带着错图导航。（实测 seed=1234/777 误差 0.0m，页位经实际取页验证。）
+- **双层护栏**：bot 内部有 `MAX_SECONDS` 预算（每圈检查），run.sh 外面再套一层
+  `timeout`（预算 +120s）兜 socket 卡死这类 bot 自己检查不到的挂起。
+- **失败也留全现场**：开过录的失败局照常 `rec_stop`/`rec_keep`（录像里有失败
+  过程），没开录就炸的局把 `bot_log.jsonl`/`summary.json(success:false)` 落到
+  `logs/bot-failure-<时间戳>/`——决策过程永远不蒸发。
 - **录制画面顶部有 Chrome 的 `--no-sandbox` 提示条**：Backroom-Wrapper 的 adapter
   以 `--no-sandbox` 起 Chrome（服务器内核下沙箱起不来），Chrome 自己画上去的，
   原包录制里同样存在，不是本包引入的。
