@@ -24,19 +24,74 @@
 | `recordings/backrooms/<id>/` | 本策略的录制（一局一目录，见下表） |
 | `logs/<run>.log` | 每次运行的控制台全文，与录制的 `summary.json` 的 `run` 字段对应 |
 
-## 用法
+## 快速开始：怎么跑
 
-```bash
-./run.sh                                          # 默认策略 02：全收集+逃脱，seed=1234
-./run.sh --strategy 01-grab-one-page              # 换回「找到一页纸」策略
-./run.sh --seed 777                               # 换一粒种子 = 换一张迷宫
-./run.sh --strategy 01-grab-one-page --pages 3    # 多收几张（策略 01 专属参数）
-./run.sh --max-seconds 120                       # 收紧一局的墙钟预算
-./run.sh --fps 15                                 # 降录制帧率（省磁盘）
+### 1. 前置条件（一次性）
+
+本包围绕同级目录的 **Backroom-Wrapper**（游戏 harness）工作，两者必须并排摆放
+（`wrapper.conf` 的 `WRAPPER_DIR` 默认就指向 `../Backroom-Wrapper`）：
+
+```
+<某个父目录>/
+├── Backroom-Escape/            # 上游游戏源码（Backroom-Wrapper 构建时需要）
+├── Backroom-Wrapper/           # harness + adapter + 游戏静态产物（game/index.html）
+└── backroom-wrapper-replay/    # 本包（git clone 到这里）
 ```
 
-前置条件与 Backroom-Wrapper 相同（Xvfb、ffmpeg、Chrome、PulseAudio 可选；
-`../Backroom-Wrapper/check_env.sh` 全绿即可）。
+然后在 Backroom-Wrapper 里构建游戏静态产物（只需一次）：
+
+```bash
+cd Backroom-Wrapper && source/build_game.sh   # 产出 game/index.html
+```
+
+环境自检（需要 **Xvfb、ffmpeg、Chrome**；PulseAudio 可选，用于录声音）：
+
+```bash
+../Backroom-Wrapper/check_env.sh               # 全绿即可开跑
+```
+
+### 2. 跑一局
+
+```bash
+./run.sh                                          # 默认策略 02：全收集+逃脱，seed=1234（约 11 分钟）
+./run.sh --strategy 01-grab-one-page              # 换回「找到一页纸」策略（约 10 秒）
+./run.sh --seed 777                               # 换一粒种子 = 换一张迷宫
+./run.sh --strategy 01-grab-one-page --pages 3    # 多收几张页（策略 01 专属参数）
+```
+
+| 参数 | 作用 | 默认 |
+|---|---|---|
+| `--strategy NAME` | 用哪个策略（`strategies/` 下的目录名） | `02-full-clear-escape` |
+| `--seed N` | 固定随机种子，决定迷宫/8 页/4 水/出口门/实体位置 | `wrapper.conf` 的 `SEED=1234` |
+| `--pages N` | 目标页数（仅策略 01） | 1 |
+| `--max-seconds N` | 一局墙钟预算，超时判负并照常收录制 | 01=240s / 02=900s |
+| `--fps N` | MP4 录制帧率（省磁盘可降） | 30 |
+| `--run NAME` | 运行名（关联日志文件名） | `replay-<时间戳>` |
+
+游戏按真实时间跑（流式档），策略 02 完整一局约 11 分钟；跑的过程中控制台会
+实时打印内挂的里程碑（取到第几张页、规避实体、开门、逃脱）。
+
+### 3. 跑完核对结果
+
+一局的所有产物落在**所用策略自己的文件夹**里：
+
+```
+strategies/<策略>/recordings/backrooms/<录制id>/   # video.mp4 + 8 个数据/日志文件
+strategies/<策略>/logs/<运行名>.log                 # 本次运行的完整控制台输出
+```
+
+快速核对结论（打印最新一局的种子、成败、页数、用时、实体最近距离）：
+
+```bash
+python3 -c "
+import json,glob
+p=sorted(glob.glob('strategies/02-full-clear-escape/recordings/backrooms/*/summary.json'))[-1]
+s=json.load(open(p)); print(p); print({k:s[k] for k in ('seed','success','escaped','pages_collected','wall_seconds','evade_episodes','entity_closest_dist')})"
+```
+
+看内挂每一步的决策推理：打开同目录的 `bot_log.jsonl`；想离线复盘一局行为：
+固定种子 + `input.jsonl`（输入序列）+ `state.jsonl`（逐帧状态）三样放一起即可。
+失败局同样完整落盘（`success:false`），控制台与 bot_log 里保留全部现场。
 
 ## 一次运行长什么样
 
