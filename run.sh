@@ -1,20 +1,25 @@
 #!/bin/bash
-# backroom-wrapper-replay 启动器：一条命令跑完「固定种子 → 内挂自动游玩找到一页纸
-# → 自动录制 MP4 + log」。
+# backroom-wrapper-replay 启动器：一条命令跑完「固定种子 → 内挂自动游玩 → 自动录制
+# MP4 + log」。策略放在 strategies/ 下，一局的所有产物（录制、决策日志、控制台全文）
+# 都落进所用策略自己的文件夹。
 #
 # 围绕同级目录的 Backroom-Wrapper 工作：harness、adapter、游戏产物全部复用它
 # （路径见 wrapper.conf 的 WRAPPER_DIR），本包只贡献内挂 bot 与编排脚本。
 #
 # 用法：
 #   ./run.sh [选项]
+#     --strategy NAME  用哪个策略（strategies/ 下的目录名，默认 02-full-clear-escape）
+#                       · 01-grab-one-page    固定种子找到 1 张日记页即成功（入门目标）
+#                       · 02-full-clear-escape 固定种子收齐 8 页 + 喝光 4 瓶杏仁水 +
+#                                              推开出口门走进亮光逃脱
 #     --seed N          固定随机种子（默认取 wrapper.conf 的 SEED=1234）
-#     --pages N         目标页数（默认 1 —— 本阶段的游戏目标是找到一页纸）
-#     --max-seconds N   一局墙钟预算，超时判负（默认 wrapper.conf 的 MAX_SECONDS）
+#     --pages N         目标页数（仅策略 01 有意义；默认 wrapper.conf 的 PAGES_GOAL）
+#     --max-seconds N   一局墙钟预算，超时判负（默认各策略自带：01=240，02=900）
 #     --fps N           MP4 录制帧率（默认 wrapper.conf 的 REC_FPS）
 #     --run NAME        运行名（默认 replay-<时间戳>；产物目录与之关联）
 #
-# 产物（每次运行一组）：
-#   recordings/backrooms/<录制 id>/
+# 产物（每次运行一组，全部落在所用策略文件夹内）：
+#   strategies/<策略>/recordings/backrooms/<录制 id>/
 #     video.mp4          本局完整外观录像（X11 抓帧 → ffmpeg，30fps，含声音）
 #     state.jsonl        逐帧游戏状态（玩家位置/朝向/页数/实体/提示……）
 #     input.jsonl        内挂发出的每一个键鼠事件（= 本局的输入序列）
@@ -22,15 +27,17 @@
 #     audio.wav          本局声音（PulseAudio 可用时）
 #     meta.json          录制元信息与质检
 #     bot_log.jsonl      内挂决策日志（每个控制周期的观测、决策与理由）
-#     summary.json       本局总结（种子、结果、用时、页的位置、产物清单）
-#   logs/<运行名>.log    本次运行的完整控制台输出
+#     summary.json       本局总结（种子、结果、用时、关键位置、产物清单）
+#   strategies/<策略>/logs/<运行名>.log   本次运行的完整控制台输出
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/wrapper.conf"
 
 SEED_ARG=""; PAGES_ARG=""; MAXS_ARG=""; FPS_ARG=""; RUN="replay-$(date +%Y%m%d-%H%M%S)"
+STRATEGY="02-full-clear-escape"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --strategy) STRATEGY="$2"; shift 2;;
     --seed) SEED_ARG="$2"; shift 2;;
     --pages) PAGES_ARG="$2"; shift 2;;
     --max-seconds) MAXS_ARG="$2"; shift 2;;
@@ -40,9 +47,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$SEED_ARG" ] && SEED="$SEED_ARG"
-[ -n "$PAGES_ARG" ] && PAGES_GOAL="$PAGES_ARG"
-[ -n "$MAXS_ARG" ] && MAX_SECONDS="$MAXS_ARG"
 [ -n "$FPS_ARG" ] && REC_FPS="$FPS_ARG"
+
+STRAT_DIR="$HERE/strategies/$STRATEGY"
+[ -d "$STRAT_DIR/bot" ] || { echo "找不到策略 $STRATEGY（应位于 strategies/$STRATEGY/bot/）"; exit 2; }
+
+# ── 各策略的入口与默认参数 ───────────────────────────────────────────────
+case "$STRATEGY" in
+  01-grab-one-page)
+    BOT="$STRAT_DIR/bot/pagefinder.py"
+    [ -n "$PAGES_ARG" ] && PAGES_GOAL="$PAGES_ARG"
+    BOT_ARGS=(--pages-goal "$PAGES_GOAL")
+    MAX_SECONDS="${MAXS_ARG:-${MAX_SECONDS_01:-240}}"
+    ;;
+  02-full-clear-escape)
+    BOT="$STRAT_DIR/bot/fullclear.py"
+    BOT_ARGS=()
+    [ -n "$PAGES_ARG" ] && echo "注意：策略 02 固定收齐 8 页，--pages 参数被忽略"
+    MAX_SECONDS="${MAXS_ARG:-${MAX_SECONDS_02:-900}}"
+    ;;
+  *)
+    echo "未知策略：$STRATEGY（run.sh 的 case 里没有它的入口）"; exit 2;;
+esac
 
 # ── 前置检查（缺什么直说，不等到半路才炸）──────────────────────────────
 for c in python3 Xvfb ffmpeg; do
@@ -79,13 +105,13 @@ DATA="$MB/runs/$RUN/modeB.sock"
 CTRL_RAW="$MB/runs/_control/$RUN.sock"
 rm -f "$(sock_of "$DATA")" "$DATA" "$DATA.path" "$(sock_of "$CTRL_RAW")" "$CTRL_RAW" "$CTRL_RAW.path" 2>/dev/null || true
 
-mkdir -p "$HERE/recordings" "$HERE/logs"
-LOG="$HERE/logs/$RUN.log"
+mkdir -p "$STRAT_DIR/recordings" "$STRAT_DIR/logs"
+LOG="$STRAT_DIR/logs/$RUN.log"
 
 # ── 起 harness（流式档 + numeric 信道：录制只认流式；bot 只读结构化状态）──
-# MODEB_RECORDINGS 指到本包：保留的录制落在本包 recordings/backrooms/ 下。
+# MODEB_RECORDINGS 指到本策略文件夹：保留的录制落在策略自己的 recordings/ 下。
 cd "$MB"
-MODEB_RECORDINGS="$HERE/recordings" python3 -u harness.py \
+MODEB_RECORDINGS="$STRAT_DIR/recordings" python3 -u harness.py \
     --adapter backrooms --game backrooms --size 1024x768 \
     --display "$DISP" --run "$RUN" \
     --clock realtime --channel numeric \
@@ -126,22 +152,22 @@ echo
 CTRL="$(sock_of "$CTRL_RAW")"
 echo "游戏已就绪（$(( SECONDS - T0 )) 秒）：$SOCK"
 
-# ── 跑内挂：固定种子 → 自动游玩到拿到一页纸 → 自动收 MP4 与 log ─────────
+# ── 跑内挂：固定种子 → 按策略自动游玩 → 自动收 MP4 与 log ───────────────
 # 外层看门狗：bot 内部有预算检查，但 socket 读卡死时只有它能兜底
 # （预算 + reset/开机 120s 余量；超时被杀按失败处理）
 BOT_TIMEOUT=$(( MAX_SECONDS + 120 ))
 echo
-echo "内挂启动：seed=$SEED 目标=$PAGES_GOAL 页，录制 ${REC_FPS}fps，预算 ${MAX_SECONDS}s"
+echo "内挂启动：策略=$STRATEGY seed=$SEED 预算 ${MAX_SECONDS}s，录制 ${REC_FPS}fps"
 echo
 set +e
-REPLAY_RUN="$RUN" timeout "${BOT_TIMEOUT}s" python3 -u "$HERE/bot/pagefinder.py" \
+REPLAY_RUN="$RUN" timeout "${BOT_TIMEOUT}s" python3 -u "$BOT" \
     --socket "$SOCK" \
     --control "$CTRL" \
     --modeb-dir "$MB" \
     --seed "$SEED" \
-    --pages-goal "$PAGES_GOAL" \
     --max-seconds "$MAX_SECONDS" \
-    --rec-fps "$REC_FPS" 2>&1 | tee -a "$LOG"
+    --rec-fps "$REC_FPS" \
+    "${BOT_ARGS[@]}" 2>&1 | tee -a "$LOG"
 RC="${PIPESTATUS[0]}"      # 紧跟管道取值：任何中间命令都会把 PIPESTATUS 冲掉
 set -e
 
