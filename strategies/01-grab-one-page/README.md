@@ -33,10 +33,15 @@
 |---|---|
 | `bot/levelgen.py` | 迷宫生成逐位移植（mulberry32/递归分割/页位），含 A* 与直线可走性检查 |
 | `bot/pagefinder.py` | 内挂本体：观测拆包、鼠标像素代数、反馈式走路、取页、录制生命周期 |
-| `recordings/backrooms/<id>/` | 本策略的历史录制（一局一目录：video.mp4 / state.jsonl / input.jsonl / frames.jsonl / audio.wav / meta.json / bot_log.jsonl / summary.json） |
+| `recordings/backrooms/<id>/` | 本策略的录制（一局一目录：video.mp4 / state.jsonl / input.jsonl / frames.jsonl / audio.wav / meta.json / bot_log.jsonl / summary.json） |
 | `logs/<run>.log` | 每次运行的控制台全文，与录制目录 summary.json 里的 `run` 字段一一对应 |
 
-历史录制清单（summary.json 的关键结论）：
+> ⚠️ **历史产物遗失说明（2026-09-19）**：本策略最初的 6 个录制与 7 个控制台日志
+> 在一次非 git 操作的磁盘删除中丢失（运行产物按包约定不进 git，无副本可恢复）。
+> 代码经 git 完整恢复。下表保留当时的实测结论作为记录；如需复现产物，
+> 用下方的命令重跑即可（同种子同图，约 10 秒一局）。
+
+历史录制清单（summary.json 的关键结论；**文件已遗失**，仅存记录）：
 
 | 录制 | 种子 | 结果 |
 |---|---|---|
